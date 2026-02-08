@@ -11,9 +11,9 @@ RUN apt-get update && apt-get install -y \
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j$(nproc) gd pdo_mysql mbstring exif pcntl bcmath zip
 
-# Node 20
+# Node 20 (includes npm)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs npm
+    && apt-get install -y nodejs
 
 WORKDIR /var/www/html
 
@@ -28,11 +28,11 @@ RUN composer install --no-dev --no-scripts --optimize-autoloader --prefer-dist
 COPY . .
 RUN composer dump-autoload --optimize
 
-# NPM: Prod-only (no dev deps needed for build)
+# NPM build
 RUN npm ci --omit=dev --progress=false \
     && npm run build
 
-# Laravel optimize (no DB/Wayfinder)
+# Laravel optimize
 RUN php artisan config:cache \
     && php artisan route:cache \
     && php artisan view:cache
@@ -41,7 +41,7 @@ RUN php artisan config:cache \
 RUN chown -R www-data:www-data storage bootstrap/cache \
     && chmod -R ug+rwx storage bootstrap/cache
 
-# Nginx config (heredoc - NO indentation on EOF line)
+# Nginx config
 COPY <<EOF /etc/nginx/conf.d/default.conf
 server {
     listen 8080;
@@ -71,7 +71,7 @@ server {
 }
 EOF
 
-# Supervisor config (heredoc - NO indentation on EOF line)
+# Supervisor config
 COPY <<EOF /etc/supervisor/conf.d/supervisord.conf
 [supervisord]
 nodaemon=true
@@ -96,7 +96,6 @@ stderr_logfile_maxbytes=0
 stdout_logfile_maxbytes=0
 EOF
 
-# Create log dirs
 RUN mkdir -p /var/log/nginx /var/log/php-fpm
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

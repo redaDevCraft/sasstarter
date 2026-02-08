@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     nginx supervisor \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20 (properly)
+# Install Node.js 20
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs
 
@@ -33,44 +33,40 @@ WORKDIR /var/www/html
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 # ----------------------------
-# Copy composer files and install dependencies (NO SCRIPTS - artisan not present yet)
+# Copy composer files and install (NO SCRIPTS)
 # ----------------------------
 COPY composer.json composer.lock ./
 RUN composer install --no-dev --no-scripts --optimize-autoloader --prefer-dist
 
 # ----------------------------
-# Copy the rest of the app (includes artisan)
+# Copy the rest of the app
 # ----------------------------
 COPY . .
 
 # ----------------------------
-# Run composer scripts NOW (artisan is available)
+# Run composer scripts
 # ----------------------------
 RUN composer dump-autoload --optimize \
     && php artisan package:discover --ansi
 
 # ----------------------------
-# Install Node dependencies and build Vite assets
+# Install Node dependencies and build assets
 # ----------------------------
 RUN npm ci --progress=false && npm run build
 RUN npm prune --production && rm -rf node_modules/.cache /root/.npm
 
 # ----------------------------
-# Set Laravel permissions
+# Set permissions
 # ----------------------------
 RUN chown -R www-data:www-data storage bootstrap/cache \
     && chmod -R ug+rwx storage bootstrap/cache
 
 # ----------------------------
-# Skip cache during build (no env vars available) - do at runtime
-# ----------------------------
-
-# ----------------------------
-# Nginx config (for production)
+# Nginx config - bind to 0.0.0.0:8080
 # ----------------------------
 COPY <<EOF /etc/nginx/conf.d/default.conf
 server {
-    listen 8080;
+    listen 0.0.0.0:8080;
     server_name _;
     root /var/www/html/public;
     index index.php;
@@ -81,9 +77,11 @@ server {
 
     location ~ \.php$ {
         try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
         fastcgi_pass 127.0.0.1:9000;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
         include fastcgi_params;
     }
 
@@ -94,7 +92,7 @@ server {
 EOF
 
 # ----------------------------
-# Supervisor config (Nginx + PHP-FPM)
+# Supervisor config
 # ----------------------------
 COPY <<EOF /etc/supervisor/conf.d/supervisord.conf
 [supervisord]
@@ -113,11 +111,31 @@ autorestart=true
 EOF
 
 # ----------------------------
+# Startup script (opens port first, then migrates)
+# ----------------------------
+COPY <<EOF /start.sh
+#!/bin/sh
+echo "Starting web server..."
+/usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf &
+
+# Wait for nginx to start listening
+sleep 3
+
+echo "Running migrations..."
+php artisan migrate --force
+
+# Keep container running
+wait
+EOF
+
+RUN chmod +x /start.sh
+
+# ----------------------------
 # Expose port
 # ----------------------------
 EXPOSE 8080
 
 # ----------------------------
-# Start services (migrations run at runtime with env vars)
+# Start (server first, then migrations)
 # ----------------------------
-CMD php artisan migrate --force && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+CMD ["/start.sh"]
